@@ -1,6 +1,6 @@
 #include <string.h>
 #include <errno.h>
-#include<unistd.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -16,15 +16,12 @@ enum maskBits {
 	COUNT_LINES   = (1 << 6)
 };
 
-static int mask = 0;
-static int optc = -1;
 static int skipFields = 0;
 static int skipChars = 0;
 static int compNrChars = -1;
-static char terminator = '\n';
 
 static int (*comp_func)(const char *s1, const char *s2, size_t n) = strncmp;
-#define BUF_SZ 4096
+
 #define set_adv(x) posix_fadvise(fileno(x), 0, 0,\
 	(POSIX_FADV_SEQUENTIAL|POSIX_FADV_WILLNEED))
 
@@ -106,6 +103,9 @@ With no options, matching lines are merged to the first occurrence.\n\n\
   -w N,    compare no more then N characters\n\
   -h  ,    print help and exit\n";
 
+	char terminator = '\n';
+	int mask = 0;
+	int optc = -1;
 
 	while(-1 != (optc = getopt(argc, argv, "cD:df:is:uzw:h"))){
 		switch(optc){
