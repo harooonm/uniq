@@ -1,3 +1,5 @@
+#define _DEFAULT_SOURCE
+
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
@@ -5,6 +7,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include "libbtree.h"
 
 enum maskBits {
 	DUPS_ONLY     = (1 << 0),
@@ -19,71 +22,73 @@ enum maskBits {
 static int skipFields = 0;
 static int skipChars = 0;
 static int compNrChars = -1;
-
-static int (*comp_func)(const char *s1, const char *s2, size_t n) = strncmp;
+static char terminator = '\n';
+static int mask = 0;
+static int (*str_cmp)(const char *s1, const char *s2, size_t n) = strncmp;
 
 #define set_adv(x) posix_fadvise(fileno(x), 0, 0,\
 	(POSIX_FADV_SEQUENTIAL|POSIX_FADV_WILLNEED))
 
+static btree_t *lines = NULL;
+
 typedef struct line{
 	char *line;
-	int count;
+	uint64_t count;
 	size_t len;
 }__attribute__((packed)) line_t;
 
-static line_t *lines = NULL;
-static uint64_t nr_lines = 0;
-
-static char *trim(char *in, size_t *olen)
+void free_line(void *data)
 {
-	*olen = 1;
-	if (!in)
-		return calloc(1, sizeof(char));
+	free(((line_t *)data)->line);
+	free(data);
+}
 
-	*olen = strlen(in);
-	char out[*olen + 1];
-	size_t chars = 0;
-	while(*in){
-		if (*in != ' ')
-			out[chars++] = *in;
-		++in;
-	}
-	out[chars++] = '\0';
-	char *ret = calloc(chars, sizeof(char));
-	ret = strncpy(ret, out, chars);
-	return ret;
+
+int comp_line(void *old, void *new)
+{
+	line_t *old_line = (line_t *)old;
+	line_t *new_line = (line_t *)new;
+	return str_cmp(old_line->line, new_line->line, compNrChars);
 }
 
 static void find_uniq_from(FILE *f)
 {
+	if (set_adv(f)) {
+		fprintf(stderr, "%s\n", strerror(errno));
+		return;
+	}
 	char *line = NULL;
 	size_t n = 0;
-	while(getline(&line, &n, f) > 0) {
-		int add = 1;
-		size_t l1_len = 0;
-		char *l1 = trim(line, &l1_len);
+	ssize_t line_len = 0;
+	while((line_len = getdelim(&line, &n, terminator, f)) > 0) {
+		line_t *d = calloc(1, sizeof(line_t));
+		d->line = strdup(line);
+		d->len = line_len;
+		int added = 0;
+		btree_t *old_line = add_get_tree_node(&lines, d, comp_line,
+			&added);
 
-		for (uint64_t i = 0; i < nr_lines; i++) {
-			char *l2 = trim(lines[i].line, &l1_len);
-			l1 += skipChars;
-			l2 += skipChars;
-			if (!comp_func(l1, l2, compNrChars)) {
-				lines[i].count++;
-				add = 0;
-			}
-			free(l2);
+		if (!added) {
+			free(d->line);
+			free(d);
 		}
-		free(l1);
 
-		if (!add)
-			continue;
-
-		lines = realloc(lines, ++nr_lines * sizeof(line_t));
-		lines[nr_lines - 1].line = strdup(line);
-		lines[nr_lines - 1].count = 1;
-		lines[nr_lines - 1].len = l1_len;
+		((line_t *)(old_line->data))->count += 1;
 	}
 	free(line);
+}
+
+void print_lines(btree_t *l)
+{
+	line_t *d = (line_t *)l->data;
+	if (((mask & DUPS_ONLY) && d->count == 1)
+		|| ((mask & UNIQUE_ONLY) && d->count > 1))
+		return;
+	d->line[d->len - 1] = terminator;
+	if (mask & COUNT_LINES)
+		fprintf(stdout, "    %lu %s", d->count, d->line);
+	else
+		fprintf(stdout, "%s", d->line);
 }
 
 int main(int argc, char **argv)
@@ -93,7 +98,7 @@ Filter adjacent matching lines from INPUT (or standard input),\n\
 writing to OUTPUT (or standard output).\n\n\
 With no options, matching lines are merged to the first occurrence.\n\n\
   -c  ,    prefix lines by the count\n\
-  -D M,    print all duplicate lines as groups as M method [none, pre, post]\n\
+  -D N,    print all duplicate lines as groups as M method [none, pre, post]\n\
   -d  ,    only print duplicte lines, one for each group\n\
   -f N,    avoid comparing the first N fields\n\
   -i  ,    ignore case\n\
@@ -103,95 +108,75 @@ With no options, matching lines are merged to the first occurrence.\n\n\
   -w N,    compare no more then N characters\n\
   -h  ,    print help and exit\n";
 
-	char terminator = '\n';
-	int mask = 0;
 	int optc = -1;
 
 	while(-1 != (optc = getopt(argc, argv, "cD:df:is:uzw:h"))){
 		switch(optc){
-		case 'c': /*DONE*/
+		case 'c':
 			mask |= COUNT_LINES;
 			break;
 		case 'D':
 		{
-			if (!strcmp("none", optarg)) {
+			if (!strcmp("none", optarg))
 				mask |= GRP_TYPE_NONE;
-			}else if (!strcmp("pre", optarg)) {
+			else if (!strcmp("pre", optarg))
 				mask |= GRP_TYPE_PRE;
-			}else if (!strcmp(optarg, "post")) {
+			else if (!strcmp(optarg, "post"))
 				mask |= GRP_TYPE_POST;
-			}else {
+			else
 				return 0;
-			}
 		}
 			break;
-		case 'd': /*DONE*/
+		case 'd':
 			mask |= DUPS_ONLY;
 			break;
 		case 'f':
 			skipFields = atoi(optarg);
 			break;
-		case 'i':/*DONE*/
+		case 'i':
 			mask |= IGNORE_CASE;
 			break;
-		case 's':/*DONE*/
+		case 's':
 			skipChars = atoi(optarg);
 			break;
-		case 'u':/*DONE*/
+		case 'u':
 			mask |= UNIQUE_ONLY;
 			break;
-		case 'z':/*DONE*/
+		case 'z':
 			terminator = '\0';
 			break;
-		case 'w': /*DONE*/
+		case 'w':
 			compNrChars = atoi(optarg);
 			break;
 		case 'h':
+			fprintf(stdout, "%s\n", usage);
 			return 1;
 		default:
+			fprintf(stdout, "%s\n", usage);
 			return 0;
 		}
 	}
 
 	if (mask & IGNORE_CASE)
-		comp_func = strncasecmp;
+		str_cmp = strncasecmp;
 
 
 	argv += optind;
-	if (!*argv) {
-		if (set_adv(stdin)) {
-			fprintf(stderr, "%s\n", strerror(errno));
-			return 0;
-		}
+	if (!*argv)
 		find_uniq_from(stdin);
-	}
 
 	while(*argv) {
 		FILE *f = fopen(*argv, "r");
-		if (!f || (f && set_adv(f))) {
+		if (!f) {
 			fprintf(stderr, "%s %s\n", *argv, strerror(errno));
-			return 0;
+			break;
 		}
 		find_uniq_from(f);
 		fclose(f);
 		++argv;
 	}
 
-	for (uint64_t i = 0; i < nr_lines; i++) {
-		if (((mask & DUPS_ONLY) && lines[i].count == 1)
-		|| ((mask & UNIQUE_ONLY) && lines[i].count > 1))
-			goto forward;
-
-		lines[i].line[lines[i].len - 1] = terminator;
-		if (mask & COUNT_LINES)
-			fprintf(stdout, "    %d %s", lines[i].count, lines[i].line);
-		else
-			fprintf(stdout, "%s", lines[i].line);
-forward:
-		free(lines[i].line);
-	}
-
-	if (lines)
-		free(lines);
+	itr_tree(lines, print_lines);
+	free_tree(&lines, free_line);
 	return 1;
 }
