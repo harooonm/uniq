@@ -19,15 +19,22 @@ enum maskBits {
 	COUNT_LINES   = (1 << 6)
 };
 
-static inline void print_with_count(uint64_t c, char *s)
+static inline void print_wc(uint64_t c, char *s)
 {
 	fprintf(stdout, "    %lu %s", c, s);
 }
 
-static inline void print_no_count(uint64_t __attribute__((unused)) c, char *s)
+static inline void print_nc(uint64_t __attribute__((unused)) c, char *s)
 {
 	fprintf(stdout, "%s", s);
 }
+
+
+/*
+TODO:LARGE File support what happens if we run out of memory????
+
+TODO skipFields how to manage it efficently that is the question
+*/
 
 static int skipFields = 0;
 static int skipChars = 0;
@@ -35,7 +42,7 @@ static int compNrChars = -1;
 static char terminator = '\n';
 static int mask = 0;
 static int (*str_cmp)(const char *s1, const char *s2, size_t n) = strncmp;
-static void (*prnt_func)(uint64_t c, char *s) = print_no_count;
+static void (*print)(uint64_t c, char *s) = print_nc;
 
 #define set_adv(x) posix_fadvise(fileno(x), 0, 0,\
 	(POSIX_FADV_SEQUENTIAL|POSIX_FADV_WILLNEED))
@@ -59,6 +66,13 @@ int comp_line(void *old, void *new)
 {
 	line_t *old_line = (line_t *)old;
 	line_t *new_line = (line_t *)new;
+
+	char *ol = old_line->line;
+	char *nl = new_line->line;
+
+	ol += skipChars;
+	nl += skipChars;
+
 	return str_cmp(old_line->line, new_line->line, compNrChars);
 }
 
@@ -74,6 +88,10 @@ static void find_uniq_from(FILE *f)
 	while((line_len = getdelim(&line, &n, terminator, f)) > 0) {
 
 		line_t *l = calloc(1, sizeof(line_t));
+		/*why not strdup or strndup ?, becuase both
+		use strlen and __strnlen respectively, but we already have
+		the "strlen" so avoid unecessary iteration over the line!
+		and just copy it*/
 		l->line = calloc(line_len + 1, sizeof(char));
 		l->line = memcpy(l->line, line, line_len);
 		l->line [line_len] = '\0';
@@ -104,7 +122,7 @@ void print_lines(btree_t *l)
 
 	d->line[d->len - 1] = terminator;
 
-	prnt_func(d->count, d->line);
+	print(d->count, d->line);
 }
 
 
@@ -175,11 +193,14 @@ With no options, matching lines are merged to the first occurrence.\n\n\
 		}
 	}
 
+	/*check once instead of for every line, saves two comparisons per
+		line*/
+
 	if (mask & IGNORE_CASE)
 		str_cmp = strncasecmp;
 
 	if (mask & COUNT_LINES)
-		prnt_func = print_with_count;
+		print = print_wc;
 
 	argv += optind;
 
@@ -197,6 +218,8 @@ With no options, matching lines are merged to the first occurrence.\n\n\
 		++argv;
 	}
 
+	/*TODO add bfs traversal to the btree library to make the
+		output gnu compatible*/
 	itr_tree(lines, print_lines);
 	free_tree(&lines, free_line);
 	return 1;
