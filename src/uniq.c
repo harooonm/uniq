@@ -19,12 +19,23 @@ enum maskBits {
 	COUNT_LINES   = (1 << 6)
 };
 
+static inline void print_with_count(uint64_t c, char *s)
+{
+	fprintf(stdout, "    %lu %s", c, s);
+}
+
+static inline void print_no_count(uint64_t __attribute__((unused)) c, char *s)
+{
+	fprintf(stdout, "%s", s);
+}
+
 static int skipFields = 0;
 static int skipChars = 0;
 static int compNrChars = -1;
 static char terminator = '\n';
 static int mask = 0;
 static int (*str_cmp)(const char *s1, const char *s2, size_t n) = strncmp;
+static void (*prnt_func)(uint64_t c, char *s) = print_no_count;
 
 #define set_adv(x) posix_fadvise(fileno(x), 0, 0,\
 	(POSIX_FADV_SEQUENTIAL|POSIX_FADV_WILLNEED))
@@ -61,16 +72,21 @@ static void find_uniq_from(FILE *f)
 	size_t n = 0;
 	ssize_t line_len = 0;
 	while((line_len = getdelim(&line, &n, terminator, f)) > 0) {
-		line_t *d = calloc(1, sizeof(line_t));
-		d->line = strdup(line);
-		d->len = line_len;
+
+		line_t *l = calloc(1, sizeof(line_t));
+		l->line = calloc(line_len + 1, sizeof(char));
+		l->line = memcpy(l->line, line, line_len);
+		l->line [line_len] = '\0';
+		l->len = line_len;
+
 		int added = 0;
-		btree_t *old_line = add_get_tree_node(&lines, d, comp_line,
+
+		btree_t *old_line = add_get_tree_node(&lines, l, comp_line,
 			&added);
 
 		if (!added) {
-			free(d->line);
-			free(d);
+			free(l->line);
+			free(l);
 		}
 
 		((line_t *)(old_line->data))->count += 1;
@@ -81,15 +97,17 @@ static void find_uniq_from(FILE *f)
 void print_lines(btree_t *l)
 {
 	line_t *d = (line_t *)l->data;
+
 	if (((mask & DUPS_ONLY) && d->count == 1)
 		|| ((mask & UNIQUE_ONLY) && d->count > 1))
 		return;
+
 	d->line[d->len - 1] = terminator;
-	if (mask & COUNT_LINES)
-		fprintf(stdout, "    %lu %s", d->count, d->line);
-	else
-		fprintf(stdout, "%s", d->line);
+
+	prnt_func(d->count, d->line);
 }
+
+
 
 int main(int argc, char **argv)
 {
@@ -160,8 +178,11 @@ With no options, matching lines are merged to the first occurrence.\n\n\
 	if (mask & IGNORE_CASE)
 		str_cmp = strncasecmp;
 
+	if (mask & COUNT_LINES)
+		prnt_func = print_with_count;
 
 	argv += optind;
+
 	if (!*argv)
 		find_uniq_from(stdin);
 
