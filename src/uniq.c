@@ -19,22 +19,15 @@ enum maskBits {
 	COUNT_LINES   = (1 << 6)
 };
 
-static inline void print_wc(uint64_t c, char *s)
+static void print_wc(uint64_t c, char *s)
 {
 	fprintf(stdout, "    %lu %s", c, s);
 }
 
-static inline void print_nc(uint64_t __attribute__((unused)) c, char *s)
+static void print_nc(uint64_t __attribute__((unused)) c, char *s)
 {
 	fprintf(stdout, "%s", s);
 }
-
-
-/*
-TODO:LARGE File support what happens if we run out of memory????
-
-TODO skipFields how to manage it efficently that is the question
-*/
 
 static int skipFields = 0;
 static int skipChars = 0;
@@ -55,6 +48,7 @@ typedef struct line{
 	size_t len;
 }__attribute__((packed)) line_t;
 
+
 void free_line(void *data)
 {
 	free(((line_t *)data)->line);
@@ -62,7 +56,32 @@ void free_line(void *data)
 }
 
 
-int comp_line(void *old, void *new)
+static char *skip_fields(char *line, int skip_nr_fields)
+{
+	int skipped_fields = 0;
+	int field_started = 0;
+	char c = '\0';
+	while((c = *line)){
+		switch(c){
+		case ' ':
+		case '\t':
+			if (field_started) {
+				skipped_fields += 1;
+				field_started = 0;
+			}
+			break;
+		default:
+			if (!field_started)
+				field_started = 1;
+			if (skipped_fields >= skip_nr_fields)
+				return line;
+		}
+		++line;
+	}
+	return line;
+}
+
+int cmpr_line(void *old, void *new)
 {
 	line_t *old_line = (line_t *)old;
 	line_t *new_line = (line_t *)new;
@@ -73,7 +92,12 @@ int comp_line(void *old, void *new)
 	ol += skipChars;
 	nl += skipChars;
 
-	return str_cmp(old_line->line, new_line->line, compNrChars);
+	if (skipFields) {
+		ol = skip_fields(ol, skipFields);
+		nl = skip_fields(nl, skipFields);
+	}
+
+	return str_cmp(ol, nl, compNrChars);
 }
 
 static void find_uniq_from(FILE *f)
@@ -88,10 +112,6 @@ static void find_uniq_from(FILE *f)
 	while((line_len = getdelim(&line, &n, terminator, f)) > 0) {
 
 		line_t *l = calloc(1, sizeof(line_t));
-		/*why not strdup or strndup ?, becuase both
-		use strlen and __strnlen respectively, but we already have
-		the "strlen" so avoid unecessary iteration over the line!
-		and just copy it*/
 		l->line = calloc(line_len + 1, sizeof(char));
 		l->line = memcpy(l->line, line, line_len);
 		l->line [line_len] = '\0';
@@ -99,7 +119,7 @@ static void find_uniq_from(FILE *f)
 
 		int added = 0;
 
-		btree_t *old_line = add_get_tree_node(&lines, l, comp_line,
+		btree_t *old_line = add_get_tree_node(&lines, l, cmpr_line,
 			&added);
 
 		if (!added) {
@@ -193,9 +213,6 @@ With no options, matching lines are merged to the first occurrence.\n\n\
 		}
 	}
 
-	/*check once instead of for every line, saves two comparisons per
-		line*/
-
 	if (mask & IGNORE_CASE)
 		str_cmp = strncasecmp;
 
@@ -218,8 +235,6 @@ With no options, matching lines are merged to the first occurrence.\n\n\
 		++argv;
 	}
 
-	/*TODO add bfs traversal to the btree library to make the
-		output gnu compatible*/
 	itr_tree(lines, print_lines);
 	free_tree(&lines, free_line);
 	return 1;
