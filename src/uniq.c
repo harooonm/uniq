@@ -19,6 +19,12 @@ enum maskBits {
 	COUNT_LINES   = (1 << 6)
 };
 
+static int skip_n_fields = 0;
+static int skip_n_chars = 0;
+static int cmpr_n_chars = -1;
+static char terminator = '\n';
+static int mask = 0;
+
 static void print_wc(uint64_t c, char *s)
 {
 	fprintf(stdout, "    %lu %s", c, s);
@@ -29,11 +35,6 @@ static void print_nc(uint64_t __attribute__((unused)) c, char *s)
 	fprintf(stdout, "%s", s);
 }
 
-static int skipFields = 0;
-static int skipChars = 0;
-static int compNrChars = -1;
-static char terminator = '\n';
-static int mask = 0;
 static int (*str_cmp)(const char *s1, const char *s2, size_t n) = strncmp;
 static void (*print)(uint64_t c, char *s) = print_nc;
 
@@ -56,7 +57,7 @@ void free_line(void *data)
 }
 
 
-static char *skip_fields(char *line, int skip_nr_fields)
+static char *skip_fields(char *line, int skip_n)
 {
 	int skipped_fields = 0;
 	int field_started = 0;
@@ -73,7 +74,7 @@ static char *skip_fields(char *line, int skip_nr_fields)
 		default:
 			if (!field_started)
 				field_started = 1;
-			if (skipped_fields >= skip_nr_fields)
+			if (skipped_fields >= skip_n)
 				return line;
 		}
 		++line;
@@ -89,15 +90,15 @@ int cmpr_line(void *old, void *new)
 	char *ol = old_line->line;
 	char *nl = new_line->line;
 
-	ol += skipChars;
-	nl += skipChars;
+	ol += skip_n_chars;
+	nl += skip_n_chars;
 
-	if (skipFields) {
-		ol = skip_fields(ol, skipFields);
-		nl = skip_fields(nl, skipFields);
+	if (skip_n_fields) {
+		ol = skip_fields(ol, skip_n_fields);
+		nl = skip_fields(nl, skip_n_fields);
 	}
 
-	return str_cmp(ol, nl, compNrChars);
+	return str_cmp(ol, nl, cmpr_n_chars);
 }
 
 static void find_uniq_from(FILE *f)
@@ -109,6 +110,7 @@ static void find_uniq_from(FILE *f)
 	char *line = NULL;
 	size_t n = 0;
 	ssize_t line_len = 0;
+
 	while((line_len = getdelim(&line, &n, terminator, f)) > 0) {
 
 		line_t *l = calloc(1, sizeof(line_t));
@@ -126,7 +128,6 @@ static void find_uniq_from(FILE *f)
 			free(l->line);
 			free(l);
 		}
-
 		((line_t *)(old_line->data))->count += 1;
 	}
 	free(line);
@@ -135,14 +136,23 @@ static void find_uniq_from(FILE *f)
 void print_lines(btree_t *l)
 {
 	line_t *d = (line_t *)l->data;
-
-	if (((mask & DUPS_ONLY) && d->count == 1)
-		|| ((mask & UNIQUE_ONLY) && d->count > 1))
-		return;
-
 	d->line[d->len - 1] = terminator;
 
-	print(d->count, d->line);
+	if ((mask & UNIQUE_ONLY) && d->count == 1) {
+		print(d->count, d->line);
+	}else {
+		if (mask & DUPS_ONLY) {
+			print(d->count, d->line);
+		}else {
+			if (mask & GRP_TYPE_PRE)
+				puts("\n");
+			for (uint64_t i = 0; i < d->count - 1; i++)
+				print(d->count, d->line);
+
+			if (mask & GRP_TYPE_POST)
+				puts("\n");
+		}
+	}
 }
 
 
@@ -173,9 +183,9 @@ With no options, matching lines are merged to the first occurrence.\n\n\
 			break;
 		case 'D':
 		{
-			if (!strcmp("none", optarg))
-				mask |= GRP_TYPE_NONE;
-			else if (!strcmp("pre", optarg))
+			mask |= GRP_TYPE_NONE;
+
+			if (!strcmp("pre", optarg))
 				mask |= GRP_TYPE_PRE;
 			else if (!strcmp(optarg, "post"))
 				mask |= GRP_TYPE_POST;
@@ -187,13 +197,13 @@ With no options, matching lines are merged to the first occurrence.\n\n\
 			mask |= DUPS_ONLY;
 			break;
 		case 'f':
-			skipFields = atoi(optarg);
+			skip_n_fields = atoi(optarg);
 			break;
 		case 'i':
 			mask |= IGNORE_CASE;
 			break;
 		case 's':
-			skipChars = atoi(optarg);
+			skip_n_chars = atoi(optarg);
 			break;
 		case 'u':
 			mask |= UNIQUE_ONLY;
@@ -202,7 +212,7 @@ With no options, matching lines are merged to the first occurrence.\n\n\
 			terminator = '\0';
 			break;
 		case 'w':
-			compNrChars = atoi(optarg);
+			cmpr_n_chars = atoi(optarg);
 			break;
 		case 'h':
 			fprintf(stdout, "%s\n", usage);
