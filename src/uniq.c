@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include "libbtree.h"
 
 enum maskBits {
 	DUPS_ONLY     = (1 << 0),
@@ -15,11 +16,23 @@ enum maskBits {
 	COUNT_LINES   = (1 << 6)
 };
 
+typedef struct line{
+	char *line;
+	int64_t count;
+	size_t len;
+}__attribute__((packed)) line_t;
+
+
+static btree_t *lines = NULL;
 static int skip_n_fields = 0;
 static int skip_n_chars = 0;
 static int cmpr_n_chars = -1;
 static char terminator = '\n';
 static int mask = UNIQUE_ONLY;
+static FILE *file_handle = NULL;
+
+#define in_file file_handle
+#define out_file file_handle
 
 static void print_wc(int64_t c, char *s, FILE *f)
 {
@@ -33,16 +46,6 @@ static void print_nc(int64_t __attribute__((unused)) c, char *s, FILE *f)
 
 static int (*str_cmp)(const char *s1, const char *s2, size_t n) = strncmp;
 static void (*fprint)(int64_t c, char *s, FILE *f) = print_nc;
-
-typedef struct line{
-	char *line;
-	int64_t count;
-	size_t len;
-}__attribute__((packed)) line_t;
-
-
-static line_t *lines = NULL;
-static int64_t nr_lines = 0;
 
 static char *skip_fields(char *line, int skip_n)
 {
@@ -69,70 +72,52 @@ static char *skip_fields(char *line, int skip_n)
 	return line;
 }
 
-int cmpr_line(char *old, char *new)
+int cmpr_line(void *old, void *new)
 {
-	old += skip_n_chars;
-	new += skip_n_chars;
+	line_t *old_line = (line_t *)old;
+	line_t *new_line = (line_t *)new;
 
-	if (skip_n_fields) {
-		old = skip_fields(old, skip_n_fields);
-		new = skip_fields(new, skip_n_fields);
+	char *ol = old_line->line;
+	char *nl = new_line->line;
+	ol += skip_n_chars;
+	nl += skip_n_chars;
+	if (skip_n_fields){
+		ol = skip_fields(ol, skip_n_fields);
+		nl = skip_fields(nl, skip_n_fields);
 	}
-
-	return str_cmp(old, new, cmpr_n_chars);
+	return str_cmp(nl, ol, cmpr_n_chars);
 }
 
-static void find_uniq_from(FILE *f)
+static int find_uniq_from(FILE *f)
 {
+	/*unlikely*/
 	if (posix_fadvise(fileno(f), 0, 0, POSIX_FADV_SEQUENTIAL
 		| POSIX_FADV_WILLNEED)){
 		fprintf(stderr, "%s\n", strerror(errno));
-		return;
+		return 0;
 	}
+
 	char *line = NULL;
 	size_t n = 0;
 	ssize_t line_len = 0;
 
 	while((line_len = getdelim(&line, &n, terminator, f)) > 0) {
-
-		int64_t tail = nr_lines - 1;
-		int64_t head = 0;
-		int64_t found = -1;
-
-		while(1 && nr_lines) {
-
-			if (head > nr_lines || head > tail)
-				break;
-
-			if (tail  < 0 || tail < head)
-				break;
-
-			if (cmpr_line(lines[head].line, line) == 0) {
-				found = head;
-				break;
-			}
-
-			if (head != tail && cmpr_line(lines[tail].line, line) == 0) {
-				found = tail;
-				break;
-			}
-			--tail;
-			++head;
+		line_t *l = calloc(1, sizeof(line_t));
+		l->line = calloc(line_len + 1, sizeof(char));
+		l->line = memcpy(l->line, line, line_len);
+		l->line [line_len] = '\0';
+		l->len = line_len;
+		int added = 0;
+		btree_t *old_line = add_get_tree_node(&lines, l, cmpr_line,
+			&added);
+		if (!added) {
+			free(l->line);
+			free(l);
 		}
-
-		if (found != -1) {
-			lines[found].count += 1;
-			continue;
-		}
-
-		lines = realloc(lines, ++nr_lines * sizeof(line_t));
-		lines[nr_lines - 1].line = calloc(line_len + 1, sizeof(char));
-		lines[nr_lines - 1].line = memcpy(lines[nr_lines - 1].line, line, line_len);
-		lines[nr_lines - 1].line[line_len] = '\0';
-		lines[nr_lines - 1].len  = line_len;
-		lines [nr_lines - 1].count += 1;
+		((line_t *)(old_line->data))->count += 1;
 	}
 	free(line);
+	return 1;
 }
 
 
@@ -149,30 +134,36 @@ static void putnl(FILE *f)
 	fputs("\n", f);
 }
 
-static void print_grouped(line_t l, FILE *f)
+static void print_grouped(char *l, int64_t count, FILE *f)
 {
 	put_before(f);
-	for (int64_t rc = 0; rc < l.count; rc++)
-		fprint(l.count, l.line, f);
+	for (int64_t rc = 0; rc < count; rc++)
+		fprint(count, l, f);
 	put_after(f);
 }
 
-static void print_lines(FILE *f)
+void free_line (void *data)
 {
-	for (int64_t i = 0; i < nr_lines; i++) {
-		line_t l = lines[i];
-		if ((l.count > 1 && (mask & UNIQUE_ONLY))
-		|| (l.count == 1 && (mask & DUPS_ONLY)))
-			continue;
+	free(((line_t *)data)->line);
+	free(data);
+}
 
-		if (((mask & UNIQUE_ONLY) && l.count == 1) ||
-			((mask & DUPS_ONLY) && l.count > 1)) {
-			fprint(l.count, l.line, f);
-			continue;
-		}
+static void print_lines(btree_t *t)
+{
+	line_t *l = (line_t *)t->data;
 
-		print_grouped(l, f);
+	l->line [l->len - 1] =  terminator;
+	if ((l->count > 1 && (mask & UNIQUE_ONLY))
+		|| (l->count == 1 && (mask & DUPS_ONLY)))
+			return;
+
+	if (((mask & UNIQUE_ONLY) && l->count == 1) ||
+		((mask & DUPS_ONLY) && l->count > 1)){
+			fprint(l->count, l->line, out_file);
+			return;
 	}
+
+	print_grouped(l->line, l->count, file_handle);
 }
 
 int main(int argc, char **argv)
@@ -248,23 +239,29 @@ writing to OUTPUT (or standard output).\n\n\
 
 	argv += optind;
 	if (!*argv) {
-		find_uniq_from(stdin);
-		print_lines(stdout);
+		if (!find_uniq_from(stdin))
+			return 0;
+		out_file = stdout;
 	} else {
-		FILE *f = fopen(*argv, "r");
-		if (!f) {
+		in_file = fopen(*argv, "r");
+		if (!in_file) {
 			fprintf(stderr, "%s %s\n", *argv, strerror(errno));
 			return 1;
 		}
-		find_uniq_from(f);
-		fclose(f);
-		f = stdout;
+		find_uniq_from(in_file);
+		fclose(in_file);
 		++argv;
+		out_file = stdout;
 		if (*argv)
-			f = fopen(*argv, "w");
-		print_lines(f);
-		fflush(f);
-		fclose(f);
+			out_file = fopen(*argv, "w");
+
+		if (!out_file) {
+			fprintf(stderr, "%s %s\n", *argv, strerror(errno));
+			return 1;
+		}
 	}
+
+	itr_tree(lines, print_lines);
+	free_tree(&lines, free_line);
 	return 1;
 }
