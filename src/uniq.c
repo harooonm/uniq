@@ -9,11 +9,11 @@
 #include <stdint.h>
 #include "libbtree.h"
 
-enum maskBits {
-	DUPS_ONLY     = (1 << 0),
-	IGNORE_CASE   = (1 << 1),
-	UNIQUE_ONLY   = (1 << 2),
-	COUNT_LINES   = (1 << 6)
+enum flags {
+	DUPS_ONLY     = 1,
+	IGNORE_CASE   = 2,
+	UNIQUE_ONLY   = 4,
+	COUNT_LINES   = 8
 };
 
 typedef struct line{
@@ -28,24 +28,27 @@ static int skip_n_fields = 0;
 static int skip_n_chars = 0;
 static int cmpr_n_chars = -1;
 static char terminator = '\n';
-static int mask = UNIQUE_ONLY;
+static int opts = UNIQUE_ONLY;
 static FILE *file_handle = NULL;
 
 #define in_file file_handle
 #define out_file file_handle
 
-static void print_wc(int64_t c, char *s, FILE *f)
+static inline void print_with_count(int64_t c, char *s, FILE *f)
 {
 	fprintf(f, "    %lu %s", c, s);
 }
 
-static void print_nc(int64_t __attribute__((unused)) c, char *s, FILE *f)
+static inline void print_without_count(int64_t __attribute__((unused)) c,
+	char *s, FILE *f)
 {
 	fprintf(f, "%s", s);
 }
 
-static int (*str_cmp)(const char *s1, const char *s2, size_t n) = strncmp;
-static void (*fprint)(int64_t c, char *s, FILE *f) = print_nc;
+static int (*cmpr_lines)(const char *s1, const char *s2, size_t n) =
+	strncmp;
+static void (*print_fmt)(int64_t c, char *s, FILE *f) =
+	print_without_count;
 
 static char *skip_fields(char *line, int skip_n)
 {
@@ -79,20 +82,23 @@ int cmpr_line(void *old, void *new)
 
 	char *ol = old_line->line;
 	char *nl = new_line->line;
+
 	ol += skip_n_chars;
 	nl += skip_n_chars;
-	if (skip_n_fields){
+
+	if (skip_n_fields) {
 		ol = skip_fields(ol, skip_n_fields);
 		nl = skip_fields(nl, skip_n_fields);
 	}
-	return str_cmp(nl, ol, cmpr_n_chars);
+
+	return cmpr_lines(nl, ol, cmpr_n_chars);
 }
 
 static int find_uniq_from(FILE *f)
 {
-	/*unlikely*/
-	if (posix_fadvise(fileno(f), 0, 0, POSIX_FADV_SEQUENTIAL
-		| POSIX_FADV_WILLNEED)){
+	/*unlikely that this call fill fail*/
+	if (__builtin_expect(posix_fadvise(fileno(f), 0, 0, POSIX_FADV_SEQUENTIAL
+		| POSIX_FADV_WILLNEED), 0)){
 		fprintf(stderr, "%s\n", strerror(errno));
 		return 0;
 	}
@@ -121,25 +127,17 @@ static int find_uniq_from(FILE *f)
 }
 
 
-static void no_nl(FILE __attribute__((unused)) *f)
+static inline void no_new_line(FILE __attribute__((unused)) *f)
 {
 	return;
 }
 
-void (*put_before)(FILE *f) = no_nl;
-void (*put_after)(FILE *f) = no_nl;
+static void (*new_line_before)(FILE *f) = no_new_line;
+static void (*new_line_after)(FILE *f) = no_new_line;
 
-static void putnl(FILE *f)
+static inline void put_new_line(FILE *f)
 {
 	fputs("\n", f);
-}
-
-static void print_grouped(char *l, int64_t count, FILE *f)
-{
-	put_before(f);
-	for (int64_t rc = 0; rc < count; rc++)
-		fprint(count, l, f);
-	put_after(f);
 }
 
 void free_line (void *data)
@@ -153,17 +151,20 @@ static void print_lines(btree_t *t)
 	line_t *l = (line_t *)t->data;
 
 	l->line [l->len - 1] =  terminator;
-	if ((l->count > 1 && (mask & UNIQUE_ONLY))
-		|| (l->count == 1 && (mask & DUPS_ONLY)))
+	if ((l->count > 1 && (opts & UNIQUE_ONLY))
+		|| (l->count == 1 && (opts & DUPS_ONLY)))
 			return;
 
-	if (((mask & UNIQUE_ONLY) && l->count == 1) ||
-		((mask & DUPS_ONLY) && l->count > 1)){
-			fprint(l->count, l->line, out_file);
+	if (((opts & UNIQUE_ONLY) && l->count == 1) ||
+		((opts & DUPS_ONLY) && l->count > 1)){
+			print_fmt(l->count, l->line, out_file);
 			return;
 	}
 
-	print_grouped(l->line, l->count, file_handle);
+	new_line_before(out_file);
+	for (int64_t rc = 0; rc < l->count; rc++)
+		print_fmt(l->count, l->line, out_file);
+	new_line_after(out_file);
 }
 
 int main(int argc, char **argv)
@@ -187,15 +188,15 @@ writing to OUTPUT (or standard output).\n\n\
 	while(-1 != (optc = getopt(argc, argv, "cD:df:is:uzw:h"))){
 		switch(optc){
 		case 'c':
-			mask |= COUNT_LINES;
+			opts |= COUNT_LINES;
 			break;
 		case 'D':
 		{
-			mask &= ~UNIQUE_ONLY;
+			opts &= ~UNIQUE_ONLY;
 			if (!strcmp("pre", optarg)) {
-				put_before = putnl;
+				new_line_before = put_new_line;
 			} else if (!strcmp(optarg, "post")) {
-				put_after = putnl;
+				new_line_after = put_new_line;
 			} else if (strcmp("none", optarg)) {
 				fprintf(stderr, "%s\n", usage);
 				return 0;
@@ -203,14 +204,14 @@ writing to OUTPUT (or standard output).\n\n\
 		}
 			break;
 		case 'd':
-			mask |= DUPS_ONLY;
-			mask &= ~UNIQUE_ONLY;
+			opts |= DUPS_ONLY;
+			opts &= ~UNIQUE_ONLY;
 			break;
 		case 'f':
 			skip_n_fields = atoi(optarg);
 			break;
 		case 'i':
-			mask |= IGNORE_CASE;
+			opts |= IGNORE_CASE;
 			break;
 		case 's':
 			skip_n_chars = atoi(optarg);
@@ -230,11 +231,11 @@ writing to OUTPUT (or standard output).\n\n\
 		}
 	}
 
-	if (mask & IGNORE_CASE)
-		str_cmp = strncasecmp;
+	if (opts & IGNORE_CASE)
+		cmpr_lines = strncasecmp;
 
-	if (mask & COUNT_LINES)
-		fprint = print_wc;
+	if (opts & COUNT_LINES)
+		print_fmt = print_with_count;
 
 
 	argv += optind;
@@ -255,13 +256,15 @@ writing to OUTPUT (or standard output).\n\n\
 		if (*argv)
 			out_file = fopen(*argv, "w");
 
-		if (!out_file) {
+		if (!out_file){
 			fprintf(stderr, "%s %s\n", *argv, strerror(errno));
-			return 1;
+			free_tree(&lines, free_line);
+			return 0;
 		}
 	}
 
 	itr_tree(lines, print_lines);
 	free_tree(&lines, free_line);
+	fclose(out_file);
 	return 1;
 }
