@@ -76,7 +76,7 @@ static char *skip_fields(char *line, int skip_n)
 	return line;
 }
 
-int cmpr_line(void *old, void *new)
+int __attribute__((hot)) cmpr_line(void *old, void *new)
 {
 	line_t *old_line = (line_t *)old;
 	line_t *new_line = (line_t *)new;
@@ -97,9 +97,9 @@ int cmpr_line(void *old, void *new)
 
 static int find_uniq_from(FILE *f)
 {
-	/*unlikely that this call fill fail*/
-	if (posix_fadvise(fileno(f), 0, 0, POSIX_FADV_SEQUENTIAL
-		| POSIX_FADV_WILLNEED)){
+	/*unliley that this will return other than zero*/
+	if (__builtin_expect(posix_fadvise(fileno(f), 0, 0,
+		POSIX_FADV_SEQUENTIAL), 0)) {
 		fprintf(stderr, "%s\n", strerror(errno));
 		return 0;
 	}
@@ -122,6 +122,8 @@ static int find_uniq_from(FILE *f)
 			free(l);
 		}
 		((line_t *)(old_line->data))->count += 1;
+		free(line);
+		line = NULL;
 	}
 	free(line);
 	return 1;
@@ -248,14 +250,20 @@ writing to OUTPUT (or standard output).\n\n\
 		out_file = stdout;
 	} else {
 		in_file = fopen(*argv, "r");
+
 		if (!in_file) {
 			fprintf(stderr, "%s %s\n", *argv, strerror(errno));
 			return 1;
 		}
+
 		find_uniq_from(in_file);
+
 		fclose(in_file);
+
 		++argv;
+
 		out_file = stdout;
+
 		if (*argv)
 			out_file = fopen(*argv, "w");
 
