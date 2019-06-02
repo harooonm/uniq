@@ -98,8 +98,8 @@ int cmpr_line(void *old, void *new)
 static int find_uniq_from(FILE *f)
 {
 	/*unlikely that this call fill fail*/
-	if (__builtin_expect(posix_fadvise(fileno(f), 0, 0, POSIX_FADV_SEQUENTIAL
-		| POSIX_FADV_WILLNEED), 0)){
+	if (posix_fadvise(fileno(f), 0, 0, POSIX_FADV_SEQUENTIAL
+		| POSIX_FADV_WILLNEED)){
 		fprintf(stderr, "%s\n", strerror(errno));
 		return 0;
 	}
