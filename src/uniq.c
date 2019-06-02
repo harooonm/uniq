@@ -36,7 +36,7 @@ static FILE *file_handle = NULL;
 
 static inline void print_with_count(int64_t c, char *s, FILE *f)
 {
-	fprintf(f, "    %lu %s", c, s);
+	fprintf(f, "    %ld %s", c, s);
 }
 
 static inline void print_without_count(int64_t __attribute__((unused)) c,
