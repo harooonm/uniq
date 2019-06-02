@@ -50,6 +50,7 @@ static int (*cmpr_lines)(const char *s1, const char *s2, size_t n) =
 static void (*print_fmt)(int64_t c, char *s, FILE *f) =
 	print_without_count;
 
+//TODO:optimize
 static char *skip_fields(char *line, int skip_n)
 {
 	int skipped_fields = 0;
@@ -221,6 +222,8 @@ writing to OUTPUT (or standard output).\n\n\
 			break;
 		case 'w':
 			cmpr_n_chars = atoi(optarg);
+			break;
+		case 'u':
 			break;
 		case 'h':
 			fprintf(stdout, "%s\n", usage);
