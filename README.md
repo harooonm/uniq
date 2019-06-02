@@ -1,7 +1,7 @@
 # uniq
 
 	Like GNU uniq, but does not require the input to be already **sorted** and does not  have **memory leaks**
-    performs **slightly** faster than the GNU version.
+    performs **slightly** faster than the GNU version and is wayyyy smaller than the GNU version.
 
  # TODO
  	1. Lots of testing (mmm maybe)
