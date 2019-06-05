@@ -11,9 +11,7 @@
 
 enum flags {
 	DUPS_ONLY     = 1,
-	IGNORE_CASE   = 2,
-	UNIQUE_ONLY   = 4,
-	COUNT_LINES   = 8
+	UNIQUE_ONLY   = 2
 };
 
 typedef struct line{
@@ -36,7 +34,7 @@ static FILE *file_handle = NULL;
 
 static inline void print_with_count(int64_t c, char *s, FILE *f)
 {
-	fprintf(f, "    %ld %s", c, s);
+	fprintf(f, "      %ld %s", c, s);
 }
 
 static inline void print_without_count(int64_t __attribute__((unused)) c,
@@ -132,7 +130,6 @@ static int find_uniq_from(FILE *f)
 
 static inline void no_new_line(FILE __attribute__((unused)) *f)
 {
-	return;
 }
 
 static void (*new_line_before)(FILE *f) = no_new_line;
@@ -152,22 +149,20 @@ void free_line (void *data)
 static void print_lines(btree_t *t)
 {
 	line_t *l = (line_t *)t->data;
-
 	l->line [l->len - 1] =  terminator;
-	if ((l->count > 1 && (opts & UNIQUE_ONLY))
-		|| (l->count == 1 && (opts & DUPS_ONLY)))
-			return;
 
-	if (((opts & UNIQUE_ONLY) && l->count == 1) ||
-		((opts & DUPS_ONLY) && l->count > 1)){
-			print_fmt(l->count, l->line, out_file);
-			return;
+	if (((opts & DUPS_ONLY) && l->count > 1)
+		|| (opts & UNIQUE_ONLY)){
+		print_fmt(l->count, l->line, out_file);
+		return;
 	}
 
-	new_line_before(out_file);
-	for (int64_t rc = 0; rc < l->count; rc++)
-		print_fmt(l->count, l->line, out_file);
-	new_line_after(out_file);
+	if (l->count > 1 ) {
+		new_line_before(out_file);
+		for (int64_t rc = 0; rc < l->count; rc++)
+			print_fmt(l->count, l->line, out_file);
+		new_line_after(out_file);
+	}
 }
 
 int main(int argc, char **argv)
@@ -176,7 +171,8 @@ int main(int argc, char **argv)
 Filter matching lines from INPUT (or standard input),\n\
 writing to OUTPUT (or standard output).\n\n\
   -c  ,    prefix lines by the count\n\
-  -D N,    print all duplicate lines as groups as M method [none, pre, post]\n\
+  -D N,    print all duplicate lines as groups as N method [none[default],\
+pre, post]\n\
   -d  ,    only print duplicte lines, one for each group\n\
   -f N,    avoid comparing the first N fields\n\
   -i  ,    ignore case\n\
@@ -188,22 +184,20 @@ writing to OUTPUT (or standard output).\n\n\
 
 	int optc = -1;
 
-	while(-1 != (optc = getopt(argc, argv, "cD:df:is:uzw:h"))){
+	while(-1 != (optc = getopt(argc, argv, "cD::df:is:uzw:h"))){
 		switch(optc){
 		case 'c':
-			opts |= COUNT_LINES;
+			print_fmt = print_with_count;
 			break;
 		case 'D':
 		{
 			opts &= ~UNIQUE_ONLY;
-			if (!strcmp("pre", optarg)) {
+			if (!optarg)
+				break;
+			if (!strcmp("pre", optarg))
 				new_line_before = put_new_line;
-			} else if (!strcmp(optarg, "post")) {
+			else if (!strcmp(optarg, "post"))
 				new_line_after = put_new_line;
-			} else if (strcmp("none", optarg)) {
-				fprintf(stderr, "%s\n", usage);
-				return 0;
-			}
 		}
 			break;
 		case 'd':
@@ -214,7 +208,7 @@ writing to OUTPUT (or standard output).\n\n\
 			skip_n_fields = atoi(optarg);
 			break;
 		case 'i':
-			opts |= IGNORE_CASE;
+			cmpr_lines = strncasecmp;
 			break;
 		case 's':
 			skip_n_chars = atoi(optarg);
@@ -235,13 +229,6 @@ writing to OUTPUT (or standard output).\n\n\
 			return 0;
 		}
 	}
-
-	if (opts & IGNORE_CASE)
-		cmpr_lines = strncasecmp;
-
-	if (opts & COUNT_LINES)
-		print_fmt = print_with_count;
-
 
 	argv += optind;
 	if (!*argv) {
