@@ -95,9 +95,10 @@ int __attribute__((hot)) cmpr_line(void *old, void *new)
 
 static int find_uniq_from(FILE *f)
 {
-	/*unliley that this will return other than zero*/
-	if (__builtin_expect(posix_fadvise(fileno(f), 0, 0,
-		POSIX_FADV_SEQUENTIAL), 0)) {
+	/*unliley that this will return other than zero
+	no advise in case we are a part of a pipeline*/
+	if (f != stdin && __builtin_expect(posix_fadvise(fileno(f), 0, 0,
+		POSIX_FADV_SEQUENTIAL|POSIX_FADV_WILLNEED), 0)) {
 		fprintf(stderr, "%s\n", strerror(errno));
 		return 0;
 	}
