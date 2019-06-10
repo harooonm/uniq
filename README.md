@@ -17,7 +17,7 @@
 	Please feel free to send bugs, memory leak reports at **maqsood3525@live.com**
 # Perf
 	To see real differnece between performance(s) , run
-	NOTE* do this ar your own risk as echo 3 will drop inode,
+	NOTE* do this at your own risk as echo 3 will drop inode,
 	dentry and page caches , if you just want to drop inode and
 	dentry cache echo 2 for more information see man proc(5)
 	sync -f; echo 3 > /proc/sys/vm/drop_caches
