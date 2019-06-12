@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include "libbtree.h"
+#include <ctype.h>
 
 enum flags {
 	DUPS_ONLY     = 1,
@@ -48,22 +49,18 @@ static int (*cmpr_lines)(const char *s1, const char *s2, size_t n) =
 static void (*print_fmt)(int64_t c, char *s, FILE *f) =
 	print_without_count;
 
-//TODO:optimize
-static char *skip_fields(char *line, int skip_n)
+static char *_skip_fields(char *line, int skip_n)
 {
 	int skipped_fields = 0;
 	int field_started = 0;
 	char c = '\0';
 	while((c = *line)){
-		switch(c){
-		case ' ':
-		case '\t':
+		if (!isspace(c)) {
 			if (field_started) {
 				skipped_fields += 1;
 				field_started = 0;
 			}
-			break;
-		default:
+		}else {
 			if (!field_started)
 				field_started = 1;
 			if (skipped_fields >= skip_n)
@@ -73,6 +70,15 @@ static char *skip_fields(char *line, int skip_n)
 	}
 	return line;
 }
+
+static char *no_skip_fields(char *line,
+	int __attribute__((unused)) skip_n)
+{
+	return line;
+}
+
+static char * (*skip_fields)(char *line, int skip_n) = no_skip_fields;
+
 
 int __attribute__((hot)) cmpr_line(void *old, void *new)
 {
@@ -85,10 +91,8 @@ int __attribute__((hot)) cmpr_line(void *old, void *new)
 	ol += skip_n_chars;
 	nl += skip_n_chars;
 
-	if (skip_n_fields) {
-		ol = skip_fields(ol, skip_n_fields);
-		nl = skip_fields(nl, skip_n_fields);
-	}
+	ol = skip_fields(ol, skip_n_fields);
+	nl = skip_fields(nl, skip_n_fields);
 
 	return cmpr_lines(nl, ol, cmpr_n_chars);
 }
@@ -207,6 +211,7 @@ pre, post]\n\
 			break;
 		case 'f':
 			skip_n_fields = atoi(optarg);
+			skip_fields = _skip_fields;
 			break;
 		case 'i':
 			cmpr_lines = strncasecmp;
