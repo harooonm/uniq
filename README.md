@@ -6,6 +6,7 @@
 # TODO
  	1. Lots of testing (mmm maybe)
  	2. Performance bench marks (In Progress)
+	3. Use AVL Tree instead of binary search tree
 
 # Build
  	Just run ./build.sh [debug|small|fast]
